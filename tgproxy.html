@@ -26,20 +26,24 @@
             flex-direction: column;
             align-items: center;
         }
+        /* Консоль в стиле Матрицы */
         #debug-log {
             width: 100%;
             max-width: 800px;
-            background: #221414;
-            border: 1px solid #552222;
-            color: #ff9999;
-            padding: 12px;
+            background: #030a03;
+            border: 1px solid #00ff00;
+            color: #33ff33;
+            text-shadow: 0 0 4px rgba(0, 255, 0, 0.6);
+            padding: 14px;
             border-radius: 8px;
             margin-bottom: 15px;
-            font-family: monospace;
+            font-family: 'Courier New', monospace;
             font-size: 0.85rem;
             white-space: pre-wrap;
             word-break: break-all;
             box-sizing: border-box;
+            opacity: 1;
+            transition: opacity 0.8s ease, margin 0.8s ease;
         }
         .container {
             max-width: 800px;
@@ -150,41 +154,38 @@
 </head>
 <body>
 
-<div id="debug-log">Консоль отладки: ожидание старта рантайма...</div>
+<div id="debug-log">[SYSTEM]: Инициализация ядра отладки...</div>
 
 <div class="container">
     <h1>MTProto Telegram Proxies</h1>
-    <div class="info">Прямой стрим списков из репозитория</div>
+    <div class="info">Автоматический отказоустойчивый список</div>
     
     <input type="text" id="search" class="search-box" placeholder="Поиск по домену или порту...">
     
-    <div id="status" class="status">Ожидание ответа от сетевых потоков...</div>
+    <div id="status" class="status">Загрузка актуальных прокси...</div>
     <div id="proxy-list" class="proxy-list"></div>
 </div>
 
 <script>
-    // Мгновенный перехват логов
     const logEl = document.getElementById('debug-log');
     function writeLog(msg) {
         console.log(msg);
         if (logEl) logEl.innerText += '\n' + msg;
     }
 
-    // Ловим любые синтаксические или runtime-ошибки до выполнения логики
     window.addEventListener('error', function(e) {
-        writeLog(`❌ СБОЙ: ${e.message} в ${e.filename}:${e.lineno}`);
+        writeLog(`[ERROR]: ${e.message} в ${e.filename}:${e.lineno}`);
     });
     window.addEventListener('unhandledrejection', function(e) {
-        writeLog(`❌ ПРОМИС ОТКЛОНЕН: ${e.reason}`);
+        writeLog(`[PROMISE_REJECTED]: ${e.reason}`);
     });
 
-    writeLog('🚀 Логгер запущен. Изоляция от внешних блокировок успешна.');
+    writeLog('[OK]: Логгер запущен. Перехват потоков активен.');
 
     let tg = null;
 
-    // Асинхронное подключение Telegram SDK, чтобы оно не тормозило рендеринг
     function initTelegramSDK() {
-        writeLog('⏳ Запрос Telegram SDK...');
+        writeLog('[INFO]: Запрос дескриптора Telegram SDK...');
         const script = document.createElement('script');
         script.src = 'https://telegram.org/js/telegram-web-app.js';
         script.async = true;
@@ -194,14 +195,14 @@
                     tg = window.Telegram.WebApp;
                     tg.ready();
                     tg.expand();
-                    writeLog('✅ Telegram SDK успешно инициализирован.');
+                    writeLog('[OK]: Telegram SDK успешно интегрирован.');
                 }
             } catch (err) {
-                writeLog('⚠️ Инициализация SDK завершилась с ошибкой: ' + err.message);
+                writeLog('[WARN]: Ошибка инициализации SDK: ' + err.message);
             }
         };
         script.onerror = function() {
-            writeLog('⚠️ Telegram SDK заблокирован средой/сетью. Переход в автономный режим.');
+            writeLog('[WARN]: Telegram SDK недоступен. Автономный режим.');
         };
         document.head.appendChild(script);
     }
@@ -235,27 +236,23 @@
         
         for (const target of endpoints) {
             try {
-                writeLog(`Запрос к источнику: ${target.name}...`);
-                statusEl.innerText = `Подключение к ${target.name}...`;
-                
+                writeLog(`[NET]: Запрос к зеркалу: ${target.name}...`);
                 const response = await fetchWithTimeout(target.url, 5000);
-                writeLog(`Ответ от ${target.name}. Код: ${response.status}`);
-                
                 if (response.ok) {
                     text = await response.text();
                     if (text && text.trim().length > 0) {
-                        writeLog(`Данные получены! Размер: ${text.length} байт.`);
+                        writeLog(`[OK]: Поток получен от ${target.name}. Размер: ${text.length} байт.`);
                         break;
                     }
                 }
             } catch (e) {
-                writeLog(`Ошибка на ${target.name}: ${e.name} -> ${e.message}`);
+                writeLog(`[FAIL]: Сбой зеркала ${target.name}: ${e.message}`);
             }
         }
         
         if (!text) {
             statusEl.innerHTML = '<span style="color:#ff6b6b; font-weight:bold;">Ошибка загрузки списков.</span>';
-            writeLog('🚨 Все доступные зеркала вернули ошибку.');
+            writeLog('[FATAL]: Все сетевые репозитории вернули ошибку.');
             return;
         }
         
@@ -263,19 +260,20 @@
             .map(l => l.trim())
             .filter(l => l.startsWith('https://t.me/proxy') || l.startsWith('tg://proxy'));
         
-        writeLog(`Найдено валидных прокси: ${lines.length}`);
+        writeLog(`[PARSER]: Найдено валидных конфигураций: ${lines.length}`);
         statusEl.style.display = 'none';
         
         function renderList(filterText = '') {
             listContainer.innerHTML = '';
             const query = filterText.toLowerCase();
             
-            lines.forEach(line => {
+            lines.forEach((line, index) => {
                 let serverName = 'Unknown Server';
                 let port = '';
                 
                 try {
-                    const urlObj = new URL(line.replace('tg://', 'https://t.me/'));
+                    const cleanUrl = line.replace('tg://', 'https://t.me/');
+                    const urlObj = new URL(cleanUrl);
                     const params = new URLSearchParams(urlObj.search);
                     serverName = params.get('server') || serverName;
                     port = params.get('port') ? `:${params.get('port')}` : '';
@@ -285,25 +283,34 @@
                     return;
                 }
 
+                // Генерируем два типа ссылок
                 const webLink = line.replace('tg://', 'https://t.me/');
                 const deepLink = line.replace('https://t.me/', 'tg://');
 
                 const item = document.createElement('a');
                 item.className = 'proxy-item';
-                item.href = deepLink;
+                // Для внешних браузеров href ОБЯЗАТЕЛЬНО должен быть tg://, чтобы открывать приложение
+                item.href = deepLink; 
+                item.setAttribute('rel', 'noopener noreferrer');
                 
                 item.innerHTML = `
                     <div class="proxy-header">
-                        <span class="tg-icon">TG</span> ${serverName}${port}
+                        <span class="tg-icon">TG</span> MTProto #${index + 1} (${serverName}${port})
                     </div>
-                    <div class="proxy-raw">${webLink}</div>
+                    <div class="proxy-raw">${deepLink}</div>
                 `;
 
+                // Умный перехватщик клика
                 item.addEventListener('click', (e) => {
-                    if (tg && typeof tg.openTelegramLink === 'function') {
+                    // Проверяем, запущены ли мы РЕАЛЬНО внутри клиента Telegram как Mini App
+                    const isInsideTelegramWebApp = tg && tg.platform !== 'unknown' && tg.initData && tg.initData.length > 0;
+                    
+                    if (isInsideTelegramWebApp && typeof tg.openTelegramLink === 'function') {
                         e.preventDefault();
                         tg.openTelegramLink(webLink);
                     }
+                    // Если открыто в обычном Хроме — preventDefault НЕ срабатывает, 
+                    // и браузер нативно обрабатывает href="tg://proxy...", запуская телегу.
                 });
 
                 listContainer.appendChild(item);
@@ -312,13 +319,24 @@
 
         searchInput.addEventListener('input', (e) => renderList(e.target.value));
         renderList();
-        writeLog('✨ Список успешно выведен на экран.');
+        
+        writeLog('[COMPLETE]: Рендеринг завершен. Очистка буфера отладки...');
+        
+        // Магия плавного исчезновения консоли
+        setTimeout(() => {
+            if (logEl) {
+                logEl.style.opacity = '0';
+                logEl.style.marginBottom = '0px';
+                setTimeout(() => {
+                    logEl.style.display = 'none';
+                }, 800);
+            }
+        }, 2000); 
     }
 
-    // Запуск процессов
     initTelegramSDK();
     loadProxies().catch(err => {
-        writeLog('Фатальный сбой функции загрузки: ' + err.message);
+        writeLog('[FATAL]: Сбой главного потока: ' + err.message);
     });
 </script>
 
