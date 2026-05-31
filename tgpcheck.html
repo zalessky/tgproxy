@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MTProto Proxies</title>
+    <style>
+        :root {
+            --bg-color: #0e0e10;
+            --container-bg: #16161a;
+            --item-bg: #212127;
+            --item-hover: #2b2b32;
+            --text-main: #f4f4f6;
+            --text-muted: #797986;
+            --accent: #2AABEE;
+        }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #debug-log {
+            width: 100%;
+            max-width: 600px;
+            background: #020502;
+            border: 1px solid #005500;
+            color: #00aa00;
+            text-shadow: 0 0 2px rgba(0, 170, 0, 0.4);
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 11px;
+            line-height: 1.3;
+            white-space: pre-wrap;
+            word-break: break-all;
+            box-sizing: border-box;
+            transition: opacity 0.6s ease, margin 0.6s ease, padding 0.6s ease;
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background: var(--container-bg);
+            padding: 16px;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            box-sizing: border-box;
+        }
+        h1 {
+            font-size: 1.3rem;
+            margin: 0 0 4px 0;
+            text-align: center;
+        }
+        .info {
+            text-align: center;
+            margin-bottom: 16px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+        .proxy-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .proxy-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 14px;
+            height: 46px;
+            background: var(--item-bg);
+            border-radius: 8px;
+            text-decoration: none;
+            color: var(--text-main);
+            transition: background 0.15s ease, opacity 0.3s ease;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .proxy-item:hover, .proxy-item:active {
+            background: var(--item-hover);
+        }
+        .proxy-item.dead {
+            opacity: 0.4;
+            pointer-events: none;
+        }
+        .proxy-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            overflow: hidden;
+            width: 100%;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #444;
+            flex-shrink: 0;
+            transition: background 0.3s ease, box-shadow 0.3s ease;
+        }
+        .status-dot.checking {
+            background: #ffaa00;
+            box-shadow: 0 0 6px rgba(255, 170, 0, 0.6);
+            animation: pulse 1s infinite alternate;
+        }
+        .status-dot.alive {
+            background: #00ff00;
+            box-shadow: 0 0 8px rgba(0, 255, 0, 0.6);
+        }
+        .status-dot.dead {
+            background: #ff3333;
+            box-shadow: 0 0 6px rgba(255, 51, 51, 0.4);
+        }
+        @keyframes pulse {
+            from { opacity: 0.4; }
+            to { opacity: 1; }
+        }
+        .proxy-host {
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            color: #e2e2e9;
+        }
+        .connect-badge {
+            background: rgba(42, 171, 238, 0.15);
+            color: var(--accent);
+            font-size: 0.75rem;
+            font-weight: bold;
+            padding: 5px 10px;
+            border-radius: 6px;
+            white-space: nowrap;
+            transition: background 0.15s ease, color 0.15s ease;
+            margin-left: 10px;
+        }
+        .proxy-item:not(.dead):hover .connect-badge {
+            background: var(--accent);
+            color: #fff;
+        }
+        .status {
+            text-align: center;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            padding: 20px 0;
+        }
+    </style>
+</head>
+<body>
+
+<div id="debug-log">[SYS]: Инициализация локального сканера...</div>
+
+<div class="container">
+    <h1>MTProto Telegram Proxies</h1>
+    <div class="info">Локальная проверка доступности (RKN bypass filter)</div>
+    
+    <div id="status" class="status">Синхронизация потоков...</div>
+    <div id="proxy-list" class="proxy-list"></div>
+</div>
+
+<script>
+    const logEl = document.getElementById('debug-log');
+    function writeLog(msg) {
+        console.log(msg);
+        if (logEl) logEl.innerText += '\n' + msg;
+    }
+
+    let tg = null;
+    function initTelegramSDK() {
+        const script = document.createElement('script');
+        script.src = 'https://telegram.org/js/telegram-web-app.js';
+        script.async = true;
+        script.onload = () => {
+            if (window.Telegram && window.Telegram.WebApp) {
+                tg = window.Telegram.WebApp;
+                tg.ready(); tg.expand();
+            }
+        };
+        document.head.appendChild(script);
+    }
+
+    // Хак: проверяем доступность IP:Port через браузерный fetch
+    async function pingProxyLocal(host, port) {
+        const timeoutMs = 1500; // Если ответа нет полторы секунды - блочится провайдером
+        const start = performance.now();
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+            // Стучимся по HTTPS. MTProto откинет нас, вызвав ошибку сети.
+            await fetch(`https://${host}:${port}`, {
+                mode: 'no-cors',
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            clearTimeout(id);
+            return true; 
+        } catch (err) {
+            clearTimeout(id);
+            const duration = performance.now() - start;
+            
+            // Если упало по таймауту (AbortError) или время вышло - это Blackhole-блокировка
+            if (err.name === 'AbortError' || duration >= timeoutMs - 50) {
+                return false;
+            }
+            // Если упало быстро - TCP рукопожатие прошло, сервер нас отфутболил (жив!)
+            return true;
+        }
+    }
+
+    // Очередь для локальной проверки
+    async function checkProxyQueue(proxies) {
+        writeLog('[SYS]: Запуск локального пинга (по 3 потока).');
+        let active = 0;
+        let index = 0;
+
+        return new Promise((resolve) => {
+            function next() {
+                if (index >= proxies.length && active === 0) {
+                    writeLog('[SYS]: Локальная валидация завершена.');
+                    resolve();
+                    return;
+                }
+                while (active < 3 && index < proxies.length) {
+                    const proxy = proxies[index++];
+                    active++;
+                    
+                    const dot = document.getElementById(`dot-${proxy.id}`);
+                    const item = document.getElementById(`item-${proxy.id}`);
+                    dot.className = 'status-dot checking';
+
+                    pingProxyLocal(proxy.host, proxy.port)
+                        .then(isAlive => {
+                            if (isAlive) {
+                                dot.className = 'status-dot alive';
+                            } else {
+                                dot.className = 'status-dot dead';
+                                item.classList.add('dead');
+                            }
+                        })
+                        .finally(() => {
+                            active--;
+                            next();
+                        });
+                }
+            }
+            next();
+        });
+    }
+
+    async function loadProxies() {
+        const listContainer = document.getElementById('proxy-list');
+        const statusEl = document.getElementById('status');
+        
+        const timestamp = Date.now();
+        const url = `https://fastly.jsdelivr.net/gh/SoliSpirit/mtproto@master/all_proxies.txt?_=${timestamp}`;
+        
+        writeLog('[NET]: Загрузка манифеста...');
+        
+        let text = '';
+        try {
+            const res = await fetch(url);
+            text = await res.text();
+        } catch (e) {
+            statusEl.innerHTML = '<span style="color:#ff3333;">Сбой сети при загрузке списка.</span>';
+            return;
+        }
+        
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l.startsWith('tg://proxy') || l.startsWith('https://t.me/proxy'));
+        
+        statusEl.style.display = 'none';
+        const proxiesToProcess = [];
+
+        lines.forEach((line, i) => {
+            let host = '', port = '443';
+            try {
+                const cleanUrl = line.replace('tg://', 'https://t.me/');
+                const urlObj = new URL(cleanUrl);
+                host = urlObj.searchParams.get('server');
+                port = urlObj.searchParams.get('port') || '443';
+            } catch (e) { return; }
+
+            const proxyId = `p${i}`;
+            proxiesToProcess.push({ id: proxyId, host, port });
+
+            const webLink = line.replace('tg://', 'https://t.me/');
+            const deepLink = line.replace('https://t.me/', 'tg://');
+
+            const item = document.createElement('a');
+            item.className = 'proxy-item';
+            item.id = `item-${proxyId}`;
+            item.href = deepLink;
+            
+            item.innerHTML = `
+                <div class="proxy-left">
+                    <span class="status-dot" id="dot-${proxyId}"></span>
+                    <span class="proxy-host">${host}:${port}</span>
+                </div>
+                <div class="connect-badge">ТГ</div>
+            `;
+
+            item.addEventListener('click', (e) => {
+                const isInsideTelegram = tg && tg.platform !== 'unknown' && tg.initData && tg.initData.length > 0;
+                if (isInsideTelegram && typeof tg.openTelegramLink === 'function') {
+                    e.preventDefault();
+                    tg.openTelegramLink(webLink);
+                }
+            });
+
+            listContainer.appendChild(item);
+        });
+        
+        writeLog(`[OK]: Отрендерено ${proxiesToProcess.length} узлов. Начинаем PING...`);
+        
+        // Запускаем локальную проверку
+        await checkProxyQueue(proxiesToProcess);
+
+        // Убираем матрицу
+        setTimeout(() => {
+            if (logEl) {
+                logEl.style.opacity = '0';
+                logEl.style.marginBottom = '0px';
+                logEl.style.padding = '0px';
+                setTimeout(() => logEl.remove(), 600);
+            }
+        }, 1500);
+    }
+
+    initTelegramSDK();
+    loadProxies().catch(err => writeLog(`[ERR]: ${err.message}`));
+</script>
+
+</body>
+</html>
